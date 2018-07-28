@@ -93,8 +93,17 @@ TypeId PieQueueDisc::GetTypeId (void)
                    TimeValue (Seconds (0.1)),
                    MakeTimeAccessor (&PieQueueDisc::m_maxBurst),
                    MakeTimeChecker ())
-  ;
-
+    .AddAttribute ("UseEcn",
+                   "True to use ECN (packets are marked instead of being dropped)",
+                   BooleanValue (false),
+                   MakeBooleanAccessor (&PieQueueDisc::m_useEcn),
+                   MakeBooleanChecker ())
+    .AddAttribute ("MaxECNMarkingThreshold",
+                   "Maximum ECN marking threshold)",
+                   DoubleValue (0.1),
+                   MakeDoubleAccessor (&PieQueueDisc::m_maxEcn),
+                   MakeDoubleChecker<double> ())
+;
   return tid;
 }
 
@@ -149,10 +158,20 @@ PieQueueDisc::DoEnqueue (Ptr<QueueDiscItem> item)
       return false;
     }
   else if (DropEarly (item, nQueued.GetValue ()))
-    {
-      // Early probability drop: proactive
-      DropBeforeEnqueue (item, UNFORCED_DROP);
-      return false;
+    { 
+       if (m_useEcn && m_dropProb < m_maxEcn)
+        {
+           Mark (item, UNFORCED_MARK);
+        }
+      /* if (m_useEcn && !item->IsMarkable ())
+        {
+        }*/
+      else if (!m_useEcn || m_dropProb >= m_maxEcn)
+        {
+          // Early probability drop: proactive
+          DropBeforeEnqueue (item, UNFORCED_DROP);
+          return false;
+        }
     }
 
   // No drop

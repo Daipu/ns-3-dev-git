@@ -96,6 +96,7 @@ public:
 
   // Reasons for dropping packets
   static constexpr const char* UNFORCED_DROP = "Unforced drop";  //!< Early probability drops: proactive
+  static constexpr const char* UNFORCED_MARK = "Unforced mark";  //!< Early probability marks
   static constexpr const char* FORCED_DROP = "Forced drop";      //!< Drops due to queue limit: reactive
 
 protected:
@@ -140,6 +141,8 @@ private:
   double m_a;                                   //!< Parameter to pie controller
   double m_b;                                   //!< Parameter to pie controller
   uint32_t m_dqThreshold;                       //!< Minimum queue size in bytes before dequeue rate is measured
+  bool m_useEcn;                                //!< True if ECN is used (packets are marked instead of being dropped)
+  double m_maxEcn;
 
   // ** Variables maintained by PIE
   double m_dropProb;                            //!< Variable used in calculation of drop probability
