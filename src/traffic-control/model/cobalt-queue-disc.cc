@@ -1,0 +1,735 @@
+/* -*- Mode:C++; c-file-style:"gnu"; indent-tabs-mode:nil; -*- */
+/*
+ * Copyright (c) 2017 NITK Surathkal
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation;
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ *
+ * Cobalt, the CODEL - BLUE - Alternate Queueing discipline
+ * Based on linux code.
+ *
+ * This port based on linux kernel code by
+ * Authors: Vignesh Kannan <vignesh2496@gmail.com>
+ *          Harsh Lara <harshapplefan@gmail.com>
+ *          Rupan Roy <rupan.roy6@gmail.com>
+*/
+
+#include "ns3/log.h"
+#include "ns3/enum.h"
+#include "ns3/uinteger.h"
+#include "ns3/abort.h"
+#include "cobalt-queue-disc.h"
+#include "ns3/object-factory.h"
+#include "ns3/drop-tail-queue.h"
+#include "ns3/net-device-queue-interface.h"
+#include <climits>
+
+/*
+ * COBALT operates the Codel and BLUE algorithms in parallel, in order
+ * to obtain the best features of each.  Codel is excellent on flows
+ * which respond to congestion signals in a TCP-like way.  BLUE is far
+ * more effective on unresponsive flows.
+ */
+
+namespace ns3 {
+
+
+NS_LOG_COMPONENT_DEFINE ("CobaltQueueDisc");
+
+NS_OBJECT_ENSURE_REGISTERED (CobaltQueueDisc);
+
+/**
+ * CoDel time stamp, used to carry CoDel time informations.
+ */
+class CobaltTimestampTag : public Tag
+{
+public:
+  CobaltTimestampTag ();
+  /**
+   * \brief Get the type ID.
+   * \return the object TypeId
+   */
+  static TypeId GetTypeId (void);
+  virtual TypeId GetInstanceTypeId (void) const;
+
+  virtual uint32_t GetSerializedSize (void) const;
+  virtual void Serialize (TagBuffer i) const;
+  virtual void Deserialize (TagBuffer i);
+  virtual void Print (std::ostream &os) const;
+
+  /**
+   * Gets the Tag creation time
+   * @return the time object stored in the tag
+   */
+  Time GetTxTime (void) const;
+private:
+  uint64_t m_creationTime; //!< Tag creation time
+};
+
+CobaltTimestampTag::CobaltTimestampTag ()
+  : m_creationTime (Simulator::Now ().GetTimeStep ())
+{
+}
+
+TypeId
+CobaltTimestampTag::GetTypeId (void)
+{
+  static TypeId tid = TypeId ("ns3::CobaltTimestampTag")
+    .SetParent<Tag> ()
+    .AddConstructor<CobaltTimestampTag> ()
+    .AddAttribute ("CreationTime",
+                   "The time at which the timestamp was created",
+                   StringValue ("0.0s"),
+                   MakeTimeAccessor (&CobaltTimestampTag::GetTxTime),
+                   MakeTimeChecker ())
+  ;
+  return tid;
+}
+
+TypeId
+CobaltTimestampTag::GetInstanceTypeId (void) const
+{
+  return GetTypeId ();
+}
+
+uint32_t
+CobaltTimestampTag::GetSerializedSize (void) const
+{
+  return 8;
+}
+
+void
+CobaltTimestampTag::Serialize (TagBuffer i) const
+{
+  i.WriteU64 (m_creationTime);
+}
+
+void
+CobaltTimestampTag::Deserialize (TagBuffer i)
+{
+  m_creationTime = i.ReadU64 ();
+}
+
+void
+CobaltTimestampTag::Print (std::ostream &os) const
+{
+  os << "CreationTime=" << m_creationTime;
+}
+
+Time
+CobaltTimestampTag::GetTxTime (void) const
+{
+  return TimeStep (m_creationTime);
+}
+
+TypeId CobaltQueueDisc::GetTypeId (void)
+{
+  static TypeId tid = TypeId ("ns3::CobaltQueueDisc")
+    .SetParent<QueueDisc> ()
+    .SetGroupName ("TrafficControl")
+    .AddConstructor<CobaltQueueDisc> ()
+    /*.AddAttribute ("Mode",
+                   "Whether to use Bytes (see MaxBytes) or Packets (see MaxPackets) as the maximum queue size metric.",
+                   EnumValue (QUEUE_DISC_MODE_BYTES),
+                   MakeEnumAccessor (&CobaltQueueDisc::SetMode),
+                   MakeEnumChecker (QUEUE_DISC_MODE_BYTES, "QUEUE_DISC_MODE_BYTES",
+                                    QUEUE_DISC_MODE_PACKETS, "QUEUE_DISC_MODE_PACKETS"))
+    .AddAttribute ("MaxPackets",
+                   "The maximum number of packets accepted by this CobaltQueueDisc.",
+                   UintegerValue (DEFAULT_COBALT_LIMIT),
+                   MakeUintegerAccessor (&CobaltQueueDisc::m_maxPackets),
+                   MakeUintegerChecker<uint32_t> ())*/
+
+    .AddAttribute ("MaxSize",
+                   "The maximum number of packets/bytes accepted by this queue disc.",
+                   QueueSizeValue (QueueSize (QueueSizeUnit::BYTES, 1500 * DEFAULT_COBALT_LIMIT)),
+                   MakeQueueSizeAccessor (&QueueDisc::SetMaxSize,
+                                          &QueueDisc::GetMaxSize),
+                   MakeQueueSizeChecker ())
+   /* .AddAttribute ("MaxBytes",
+                   "The maximum number of bytes accepted by this CobaltQueueDisc.",
+                   UintegerValue (1500 * DEFAULT_COBALT_LIMIT),
+                   MakeUintegerAccessor (&CobaltQueueDisc::m_maxBytes),
+                   MakeUintegerChecker<uint32_t> ()) */
+    .AddAttribute ("MinBytes",
+                   "The Cobalt algorithm minbytes parameter.",
+                   UintegerValue (1500),
+                   MakeUintegerAccessor (&CobaltQueueDisc::m_minBytes),
+                   MakeUintegerChecker<uint32_t> ())
+    .AddAttribute ("Interval",
+                   "The Cobalt algorithm interval",
+                   StringValue ("100ms"),
+                   MakeTimeAccessor (&CobaltQueueDisc::m_interval),
+                   MakeTimeChecker ())
+    .AddAttribute ("Target",
+                   "The Cobalt algorithm target queue delay",
+                   StringValue ("5ms"),
+                   MakeTimeAccessor (&CobaltQueueDisc::m_target),
+                   MakeTimeChecker ())
+    .AddAttribute ("UseEcn",
+                   "True to use ECN (packets are marked instead of being dropped)",
+                   BooleanValue (false),
+                   MakeBooleanAccessor (&CobaltQueueDisc::m_useEcn),
+                   MakeBooleanChecker ())
+    .AddAttribute ("Pdrop",
+                   "Marking Probabilty",
+                   DoubleValue (0),
+                   MakeDoubleAccessor (&CobaltQueueDisc::m_Pdrop),
+                   MakeDoubleChecker<double> ())
+    .AddAttribute ("Increment",
+                   "Pdrop increment value",
+                   DoubleValue (0.0025),
+                   MakeDoubleAccessor (&CobaltQueueDisc::m_increment),
+                   MakeDoubleChecker<double> ())
+    .AddAttribute ("Decrement",
+                   "Pdrop decrement Value",
+                   DoubleValue (0.00025),
+                   MakeDoubleAccessor (&CobaltQueueDisc::m_decrement),
+                   MakeDoubleChecker<double> ())
+    .AddTraceSource ("Count",
+                     "Cobalt count",
+                     MakeTraceSourceAccessor (&CobaltQueueDisc::m_count),
+                     "ns3::TracedValueCallback::Uint32")
+    .AddTraceSource ("DropState",
+                     "Dropping state",
+                     MakeTraceSourceAccessor (&CobaltQueueDisc::m_dropping),
+                     "ns3::TracedValueCallback::Bool")
+    .AddTraceSource ("Sojourn",
+                     "Time in the queue",
+                     MakeTraceSourceAccessor (&CobaltQueueDisc::m_sojourn),
+                     "ns3::Time::TracedValueCallback")
+    .AddTraceSource ("DropNext",
+                     "Time until next packet drop",
+                     MakeTraceSourceAccessor (&CobaltQueueDisc::m_dropNext),
+                     "ns3::TracedValueCallback::Uint32")
+  ;
+
+  return tid;
+}
+
+/**
+ * Performs a reciprocal divide, similar to the
+ * Linux kernel reciprocal_divide function
+ * \param A numerator
+ * \param R reciprocal of the denominator B
+ * \return the value of A/B
+ */
+/* borrowed from the linux kernel */
+static inline uint32_t ReciprocalDivide (uint32_t A, uint32_t R)
+{
+  return (uint32_t)(((uint64_t)A * R) >> 32);
+}
+
+double min(double x, double y)
+{
+       return (x < y) ? x : y;
+}
+
+double max(double x, double y)
+{
+       return (x > y) ? x : y;
+}
+
+/**
+ * Returns the current time translated in CoDel time representation
+ * \return the current time
+ */
+static uint32_t CoDelGetTime (void)
+{
+  Time time = Simulator::Now ();
+  uint64_t ns = time.GetNanoSeconds ();
+
+  return ns >> COBALT_SHIFT;
+}
+
+
+CobaltQueueDisc::CobaltQueueDisc ()
+  : QueueDisc ()
+{
+  NS_LOG_FUNCTION (this);
+  InitializeParams ();
+  m_uv = CreateObject<UniformRandomVariable> ();
+}
+
+double CobaltQueueDisc::GetPdrop()
+{
+  return m_Pdrop;
+}
+
+CobaltQueueDisc::~CobaltQueueDisc ()
+{
+  NS_LOG_FUNCTION (this);
+}
+
+int64_t
+CobaltQueueDisc::AssignStreams (int64_t stream)
+{
+  NS_LOG_FUNCTION (this << stream);
+  m_uv->SetStream (stream);
+  return 1;
+}
+
+void
+CobaltQueueDisc::InitializeParams (void)
+{
+    // Cobalt parameters
+    NS_LOG_FUNCTION (this);
+    m_count = 0;
+    m_dropping = false;
+    m_recInvSqrt = ~0U >> REC_INV_SQRT_SHIFT;
+    m_lastUpdateTimeBlue = 0;
+    m_firstAboveTime = 0;
+    m_dropNext = 0;
+    m_sojourn = 0;
+
+    // Stats
+    m_stats.forcedDrop = 0;
+    m_stats.unforcedDrop = 0;
+    m_stats.qLimDrop = 0;
+    m_stats.forcedMark = 0;
+}
+
+/*void
+CobaltQueueDisc::SetMode (QueueDiscMode mode)
+{
+  NS_LOG_FUNCTION (mode);
+  m_mode = mode;
+}
+
+CobaltQueueDisc::QueueDiscMode
+CobaltQueueDisc::GetMode (void)
+{
+  NS_LOG_FUNCTION (this);
+  return m_mode;
+}*/
+
+CobaltQueueDisc::Stats
+CobaltQueueDisc::GetStats ()
+{
+  NS_LOG_FUNCTION (this);
+  return m_stats;
+}
+
+bool
+CobaltQueueDisc::CoDelTimeAfter (uint32_t a, uint32_t b)
+{
+  return  ((int)(a) - (int)(b) > 0);
+}
+
+bool
+CobaltQueueDisc::CoDelTimeAfterEq (uint32_t a, uint32_t b)
+{
+  return ((int)(a) - (int)(b) >= 0);
+}
+
+bool
+CobaltQueueDisc::CoDelTimeBefore (uint32_t a, uint32_t b)
+{
+  return  ((int)(a) - (int)(b) < 0);
+}
+
+bool
+CobaltQueueDisc::CoDelTimeBeforeEq (uint32_t a, uint32_t b)
+{
+  return ((int)(a) - (int)(b) <= 0);
+}
+
+uint32_t
+CobaltQueueDisc::Time2CoDel (Time t)
+{
+  return (t.GetNanoSeconds () >> COBALT_SHIFT);
+}
+
+Time
+CobaltQueueDisc::GetTarget (void)
+{
+  return m_target;
+}
+
+Time
+CobaltQueueDisc::GetInterval (void)
+{
+  return m_interval;
+}
+
+uint32_t
+CobaltQueueDisc::GetDropNext (void)
+{
+  return m_dropNext;
+}
+
+uint32_t
+CobaltQueueDisc::GetDropOverLimit (void)
+{
+  return m_stats.qLimDrop;
+}
+
+uint32_t
+CobaltQueueDisc::GetDropCount (void)
+{
+  return m_stats.forcedDrop;
+}
+
+void
+CobaltQueueDisc::NewtonStep (void)
+{
+  NS_LOG_FUNCTION (this);
+  uint32_t invsqrt = ((uint32_t) m_recInvSqrt) << REC_INV_SQRT_SHIFT;
+  uint32_t invsqrt2 = ((uint64_t) invsqrt * invsqrt) >> 32;
+  uint64_t val = (3ll << 32) - ((uint64_t) m_count * invsqrt2);
+
+  val >>= 2; /* avoid overflow */
+  val = (val * invsqrt) >> (32 - 2 + 1);
+  m_recInvSqrt = val >> REC_INV_SQRT_SHIFT;
+}
+
+uint32_t
+CobaltQueueDisc::ControlLaw (uint32_t t)
+{
+  NS_LOG_FUNCTION (this);
+  return t + ReciprocalDivide (Time2CoDel (m_interval), m_recInvSqrt << REC_INV_SQRT_SHIFT);
+}
+
+/*uint32_t
+CobaltQueueDisc::GetQueueSize (void)
+{
+  NS_LOG_FUNCTION (this);
+  if (GetMode () == QUEUE_DISC_MODE_BYTES)
+    {
+      return GetInternalQueue (0)->GetNBytes ();
+    }
+  else if (GetMode () == QUEUE_DISC_MODE_PACKETS)
+    {
+      return GetInternalQueue (0)->GetNPackets ();
+    }
+  else
+    {
+      NS_ABORT_MSG ("Unknown mode.");
+    }
+}*/
+
+Time
+CobaltQueueDisc::GetQueueDelay (void)
+{
+  NS_LOG_FUNCTION (this);
+  return m_sojourn;
+}
+
+void
+CobaltQueueDisc::DoDispose (void)
+{
+  NS_LOG_FUNCTION (this);
+  m_uv = 0;
+  QueueDisc::DoDispose ();
+}
+
+Ptr<const QueueDiscItem>
+CobaltQueueDisc::DoPeek (void) const
+{
+  NS_LOG_FUNCTION (this);
+  if (GetInternalQueue (0)->IsEmpty ())
+    {
+      NS_LOG_LOGIC ("Queue empty");
+      return 0;
+    }
+
+  Ptr<const QueueDiscItem> item = GetInternalQueue (0)->Peek ();
+
+  NS_LOG_LOGIC ("Number packets " << GetInternalQueue (0)->GetNPackets ());
+  NS_LOG_LOGIC ("Number bytes " << GetInternalQueue (0)->GetNBytes ());
+
+  return item;
+}
+
+bool
+CobaltQueueDisc::CheckConfig (void)
+{
+  NS_LOG_FUNCTION (this);
+  if (GetNQueueDiscClasses () > 0)
+    {
+      NS_LOG_ERROR ("CobaltQueueDisc cannot have classes");
+      return false;
+    }
+
+  if (GetNPacketFilters () > 0)
+    {
+      NS_LOG_ERROR ("CobaltQueueDisc cannot have packet filters");
+      return false;
+    }
+
+  if (GetNInternalQueues () == 0)
+    {
+
+           AddInternalQueue (CreateObjectWithAttributes<DropTailQueue<QueueDiscItem> >
+                          ("MaxSize", QueueSizeValue (GetMaxSize ())));
+    }
+      // create a DropTail queue
+     /* Ptr<InternalQueue> queue = CreateObjectWithAttributes<DropTailQueue<QueueDiscItem> > ("Mode", EnumValue (m_mode));
+      if (m_mode == QUEUE_DISC_MODE_PACKETS)
+        {
+          //queue->SetMaxPackets (m_maxPackets);
+          queue->GetNPackets(m_maxPackets);
+        }
+      else
+        {
+          queue->GetNBytes(m_maxBytes);
+          //queue->SetMaxBytes (m_maxBytes);
+        }
+      AddInternalQueue (queue);
+    }*/
+
+  if (GetNInternalQueues () != 1)
+    {
+      NS_LOG_ERROR ("CobaltQueueDisc needs 1 internal queue");
+      return false;
+    }
+    return true;
+  }
+
+  /*if ((GetInternalQueue (0)->GetMode () == QueueBase::QUEUE_MODE_PACKETS && m_mode == QUEUE_DISC_MODE_BYTES) ||
+      (GetInternalQueue (0)->GetMode () == QueueBase::QUEUE_MODE_BYTES && m_mode == QUEUE_DISC_MODE_PACKETS))
+    {
+      NS_LOG_ERROR ("The mode of the provided queue does not match the mode set on the CobaltQueueDisc");
+      return false;
+    }
+
+  if ((m_mode ==  QUEUE_DISC_MODE_PACKETS && GetInternalQueue (0)->GetMaxPackets () < m_maxPackets) ||
+      (m_mode ==  QUEUE_DISC_MODE_BYTES && GetInternalQueue (0)->GetMaxBytes () < m_maxBytes))
+    {
+      NS_LOG_ERROR ("The size of the internal queue is less than the queue disc limit");
+      return false;
+    }
+
+  return true;
+}*/
+
+bool
+CobaltQueueDisc::DoEnqueue (Ptr<QueueDiscItem> item)
+{
+  NS_LOG_FUNCTION (this << item);
+  Ptr<Packet> p = item->GetPacket ();
+
+  /*NS_LOG_LOGIC ("mode :: " << m_mode << " Packets :: " << GetInternalQueue (0)->GetNPackets () << " m_maxPackets :: " << m_maxPackets);
+  NS_LOG_LOGIC ("mode :: " << m_mode << " Packets :: " << GetInternalQueue (0)->GetNBytes () << " m_maxBytes :: " << m_maxBytes);
+  if (m_mode == QUEUE_DISC_MODE_PACKETS && (GetInternalQueue (0)->GetNPackets () + 1 > m_maxPackets))
+    {
+      NS_LOG_LOGIC ("Queue full (at max packets) -- dropping pkt");
+      uint32_t now = CoDelGetTime ();
+      // Call this to update Blue's drop probability
+      CobaltQueueFull(now);
+      Drop (item);
+      m_stats.qLimDrop++;
+      return false;
+    }
+
+  if (m_mode == QUEUE_DISC_MODE_BYTES && (GetInternalQueue (0)->GetNBytes () + item->GetSize () > m_maxBytes))
+    {
+      NS_LOG_LOGIC ("Queue full (packet would exceed max bytes) -- dropping pkt");
+      uint32_t now = CoDelGetTime ();
+      // Call this to update Blue's drop probability
+      CobaltQueueFull(now);
+      Drop (item);
+      m_stats.qLimDrop++;
+      return false;
+    }*/
+
+    if (GetCurrentSize () + item > GetMaxSize ())
+    {
+      NS_LOG_LOGIC ("Queue full -- dropping pkt");
+      uint32_t now = CoDelGetTime ();
+      // Call this to update Blue's drop probability
+      CobaltQueueFull(now);
+      DropBeforeEnqueue (item, OVERLIMIT_DROP);
+      m_stats.qLimDrop++;
+      return false;
+    }
+
+  // Tag packet with current time for DoDequeue() to compute sojourn time
+  CobaltTimestampTag tag;
+  p->AddPacketTag (tag);
+
+  bool retval = GetInternalQueue (0)->Enqueue (item);
+
+  // If Queue::Enqueue fails, QueueDisc::Drop is called by the internal queue
+  // because QueueDisc::AddInternalQueue sets the drop callback
+
+  NS_LOG_LOGIC ("Number packets " << GetInternalQueue (0)->GetNPackets ());
+  NS_LOG_LOGIC ("Number bytes " << GetInternalQueue (0)->GetNBytes ());
+
+  return retval;
+}
+
+Ptr<QueueDiscItem>
+CobaltQueueDisc::DoDequeue (void)
+{
+  NS_LOG_FUNCTION (this);
+
+  while(1)
+    {
+       Ptr<QueueDiscItem> item = GetInternalQueue (0)->Dequeue ();
+       if (!item)
+        {
+          // Leave dropping state when queue is empty (derived from Codel)
+          m_dropping = false;
+          NS_LOG_LOGIC ("Queue empty");
+          uint32_t now = CoDelGetTime ();
+          // Call this to update Blue's drop probability
+          CobaltQueueEmpty(now);
+          return 0;
+        }
+
+       uint32_t now = CoDelGetTime ();
+
+       NS_LOG_LOGIC ("Popped " << item);
+       NS_LOG_LOGIC ("Number packets remaining " << GetInternalQueue (0)->GetNPackets ());
+       NS_LOG_LOGIC ("Number bytes remaining " << GetInternalQueue (0)->GetNBytes ());
+
+       // Determine if item should be dropped
+       // ECN marking happens inside this function, so it need not be done here
+       bool drop = CobaltShouldDrop(item, now);
+
+       if(drop)
+           DropAfterDequeue (item, TARGET_EXCEEDED_DROP);
+            //drop (item);
+       else
+            return item;
+    }
+}
+
+/* Call this when a packet had to be dropped due to queue overflow.
+ * Returns true if the BLUE state was quiescent before but active after this call.
+ */
+void CobaltQueueDisc::CobaltQueueFull(uint32_t now)
+{
+  NS_LOG_LOGIC ("Outside IF block");
+  if(CoDelTimeAfter((now - m_lastUpdateTimeBlue), Time2CoDel(m_target)))
+  {
+    NS_LOG_LOGIC ("inside IF block");
+    m_Pdrop = min(m_Pdrop + m_increment, (double)1.0);
+		m_lastUpdateTimeBlue = now;
+  }
+  m_dropping = true;
+  m_dropNext = now;
+  if(!m_count)
+        m_count = 1;
+}
+
+/* Call this when the queue was serviced but turned out to be empty.
+ * Returns true if the BLUE state was active before but quiescent after this call.
+ */
+void CobaltQueueDisc::CobaltQueueEmpty(uint32_t now)
+{
+	if(m_Pdrop && CoDelTimeAfter((now - m_lastUpdateTimeBlue), Time2CoDel(m_target)))
+        {
+                m_Pdrop = max(m_Pdrop - m_decrement, (double)0.0);
+		m_lastUpdateTimeBlue = now;
+	}
+	m_dropping = true;
+
+	if(m_count && CoDelTimeAfterEq ((now - m_dropNext), 0))
+        {
+		m_count--;
+                NewtonStep ();
+		m_dropNext = ControlLaw (m_dropNext);
+	}
+}
+
+// Determines if Cobalt should drop the packet
+bool CobaltQueueDisc::CobaltShouldDrop(Ptr<QueueDiscItem> item, uint32_t now)
+{
+        bool drop = false, codelForcedDrop = false;
+	/* Simple BLUE implementation. Lack of ECN is deliberate. */
+	if(m_Pdrop)
+	{
+	        double u = m_uv->GetValue ();
+		drop = (u < m_Pdrop);
+	}
+
+	/* Simplified Codel implementation */
+        CobaltTimestampTag tag;
+        bool found = item->GetPacket ()->RemovePacketTag (tag);
+        NS_ASSERT_MSG (found, "found a packet without an input timestamp tag");
+        NS_UNUSED (found);    //silence compiler warning
+	Time delta = Simulator::Now () - tag.GetTxTime ();
+        NS_LOG_INFO ("Sojourn time " << delta.GetSeconds ());
+        m_sojourn = delta;
+        uint32_t sojournTime = Time2CoDel (delta);
+        uint32_t schedule = now - m_dropNext;
+	bool over_target = CoDelTimeAfter (sojournTime, Time2CoDel (m_target));
+	bool next_due = m_count && schedule >= 0;
+
+	if(over_target)
+	{
+		if(!m_dropping)
+		{
+			m_dropping = true;
+			m_dropNext = ControlLaw (now);
+		}
+		if(!m_count)
+			m_count = 1;
+	}
+	else if(m_dropping)
+	{
+		m_dropping = false;
+	}
+
+	if(next_due && m_dropping)
+	{
+		/* Check for marking possibility only if BLUE decides NOT to drop. */
+		/* Check if router and packet, both have ECN enabled. Only if this is true, mark the packet. */
+		if(!drop)
+		{
+		        drop = !(m_useEcn && item->Mark());
+                if(!drop)
+		            m_stats.forcedMark++;
+		        else
+		            codelForcedDrop = true;
+		}
+
+	        m_count = max(m_count, m_count + 1);
+
+		NewtonStep();
+		m_dropNext = ControlLaw (m_dropNext);
+		schedule = now - m_dropNext;
+	}
+	else
+	{
+		while(next_due)
+		{
+			m_count--;
+			NewtonStep();
+			m_dropNext = ControlLaw (m_dropNext);
+			schedule = now - m_dropNext;
+			next_due = m_count && schedule >= 0;
+		}
+	}
+
+	/* Overload the drop_next field as an activity timeout */
+	if(!m_count)
+		m_dropNext = now + Time2CoDel (m_interval);
+	else if(schedule > 0 && !drop)
+		m_dropNext = now;
+
+        // Updating stats
+	if(drop)
+	{
+	        if(codelForcedDrop || m_Pdrop == 1.0)
+	                m_stats.forcedDrop++;
+	        else
+	                m_stats.unforcedDrop++;
+	}
+
+	return drop;
+}
+
+} // namespace ns3
