@@ -138,17 +138,7 @@ TypeId CobaltQueueDisc::GetTypeId (void)
     .SetParent<QueueDisc> ()
     .SetGroupName ("TrafficControl")
     .AddConstructor<CobaltQueueDisc> ()
-    /*.AddAttribute ("Mode",
-                   "Whether to use Bytes (see MaxBytes) or Packets (see MaxPackets) as the maximum queue size metric.",
-                   EnumValue (QUEUE_DISC_MODE_BYTES),
-                   MakeEnumAccessor (&CobaltQueueDisc::SetMode),
-                   MakeEnumChecker (QUEUE_DISC_MODE_BYTES, "QUEUE_DISC_MODE_BYTES",
-                                    QUEUE_DISC_MODE_PACKETS, "QUEUE_DISC_MODE_PACKETS"))
-    .AddAttribute ("MaxPackets",
-                   "The maximum number of packets accepted by this CobaltQueueDisc.",
-                   UintegerValue (DEFAULT_COBALT_LIMIT),
-                   MakeUintegerAccessor (&CobaltQueueDisc::m_maxPackets),
-                   MakeUintegerChecker<uint32_t> ())*/
+   
 
     .AddAttribute ("MaxSize",
                    "The maximum number of packets/bytes accepted by this queue disc.",
@@ -156,11 +146,7 @@ TypeId CobaltQueueDisc::GetTypeId (void)
                    MakeQueueSizeAccessor (&QueueDisc::SetMaxSize,
                                           &QueueDisc::GetMaxSize),
                    MakeQueueSizeChecker ())
-   /* .AddAttribute ("MaxBytes",
-                   "The maximum number of bytes accepted by this CobaltQueueDisc.",
-                   UintegerValue (1500 * DEFAULT_COBALT_LIMIT),
-                   MakeUintegerAccessor (&CobaltQueueDisc::m_maxBytes),
-                   MakeUintegerChecker<uint32_t> ()) */
+  
     .AddAttribute ("MinBytes",
                    "The Cobalt algorithm minbytes parameter.",
                    UintegerValue (1500),
@@ -299,19 +285,6 @@ CobaltQueueDisc::InitializeParams (void)
     m_stats.forcedMark = 0;
 }
 
-/*void
-CobaltQueueDisc::SetMode (QueueDiscMode mode)
-{
-  NS_LOG_FUNCTION (mode);
-  m_mode = mode;
-}
-
-CobaltQueueDisc::QueueDiscMode
-CobaltQueueDisc::GetMode (void)
-{
-  NS_LOG_FUNCTION (this);
-  return m_mode;
-}*/
 
 CobaltQueueDisc::Stats
 CobaltQueueDisc::GetStats ()
@@ -400,23 +373,7 @@ CobaltQueueDisc::ControlLaw (uint32_t t)
   return t + ReciprocalDivide (Time2CoDel (m_interval), m_recInvSqrt << REC_INV_SQRT_SHIFT);
 }
 
-/*uint32_t
-CobaltQueueDisc::GetQueueSize (void)
-{
-  NS_LOG_FUNCTION (this);
-  if (GetMode () == QUEUE_DISC_MODE_BYTES)
-    {
-      return GetInternalQueue (0)->GetNBytes ();
-    }
-  else if (GetMode () == QUEUE_DISC_MODE_PACKETS)
-    {
-      return GetInternalQueue (0)->GetNPackets ();
-    }
-  else
-    {
-      NS_ABORT_MSG ("Unknown mode.");
-    }
-}*/
+
 
 Time
 CobaltQueueDisc::GetQueueDelay (void)
@@ -473,20 +430,7 @@ CobaltQueueDisc::CheckConfig (void)
            AddInternalQueue (CreateObjectWithAttributes<DropTailQueue<QueueDiscItem> >
                           ("MaxSize", QueueSizeValue (GetMaxSize ())));
     }
-      // create a DropTail queue
-     /* Ptr<InternalQueue> queue = CreateObjectWithAttributes<DropTailQueue<QueueDiscItem> > ("Mode", EnumValue (m_mode));
-      if (m_mode == QUEUE_DISC_MODE_PACKETS)
-        {
-          //queue->SetMaxPackets (m_maxPackets);
-          queue->GetNPackets(m_maxPackets);
-        }
-      else
-        {
-          queue->GetNBytes(m_maxBytes);
-          //queue->SetMaxBytes (m_maxBytes);
-        }
-      AddInternalQueue (queue);
-    }*/
+      
 
   if (GetNInternalQueues () != 1)
     {
@@ -496,52 +440,14 @@ CobaltQueueDisc::CheckConfig (void)
     return true;
   }
 
-  /*if ((GetInternalQueue (0)->GetMode () == QueueBase::QUEUE_MODE_PACKETS && m_mode == QUEUE_DISC_MODE_BYTES) ||
-      (GetInternalQueue (0)->GetMode () == QueueBase::QUEUE_MODE_BYTES && m_mode == QUEUE_DISC_MODE_PACKETS))
-    {
-      NS_LOG_ERROR ("The mode of the provided queue does not match the mode set on the CobaltQueueDisc");
-      return false;
-    }
-
-  if ((m_mode ==  QUEUE_DISC_MODE_PACKETS && GetInternalQueue (0)->GetMaxPackets () < m_maxPackets) ||
-      (m_mode ==  QUEUE_DISC_MODE_BYTES && GetInternalQueue (0)->GetMaxBytes () < m_maxBytes))
-    {
-      NS_LOG_ERROR ("The size of the internal queue is less than the queue disc limit");
-      return false;
-    }
-
-  return true;
-}*/
-
+  
 bool
 CobaltQueueDisc::DoEnqueue (Ptr<QueueDiscItem> item)
 {
   NS_LOG_FUNCTION (this << item);
   Ptr<Packet> p = item->GetPacket ();
 
-  /*NS_LOG_LOGIC ("mode :: " << m_mode << " Packets :: " << GetInternalQueue (0)->GetNPackets () << " m_maxPackets :: " << m_maxPackets);
-  NS_LOG_LOGIC ("mode :: " << m_mode << " Packets :: " << GetInternalQueue (0)->GetNBytes () << " m_maxBytes :: " << m_maxBytes);
-  if (m_mode == QUEUE_DISC_MODE_PACKETS && (GetInternalQueue (0)->GetNPackets () + 1 > m_maxPackets))
-    {
-      NS_LOG_LOGIC ("Queue full (at max packets) -- dropping pkt");
-      uint32_t now = CoDelGetTime ();
-      // Call this to update Blue's drop probability
-      CobaltQueueFull(now);
-      Drop (item);
-      m_stats.qLimDrop++;
-      return false;
-    }
-
-  if (m_mode == QUEUE_DISC_MODE_BYTES && (GetInternalQueue (0)->GetNBytes () + item->GetSize () > m_maxBytes))
-    {
-      NS_LOG_LOGIC ("Queue full (packet would exceed max bytes) -- dropping pkt");
-      uint32_t now = CoDelGetTime ();
-      // Call this to update Blue's drop probability
-      CobaltQueueFull(now);
-      Drop (item);
-      m_stats.qLimDrop++;
-      return false;
-    }*/
+  
 
     if (GetCurrentSize () + item > GetMaxSize ())
     {
