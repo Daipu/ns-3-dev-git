@@ -506,7 +506,6 @@ CobaltQueueDisc::DoDequeue (void)
 
        if(drop)
            DropAfterDequeue (item, TARGET_EXCEEDED_DROP);
-            //drop (item);
        else
             return item;
     }

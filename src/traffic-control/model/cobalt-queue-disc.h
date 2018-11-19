@@ -296,10 +296,8 @@ private:
   // Maintained by Cobalt
   Stats m_stats;                          //!< Cobalt statistics
   // Supplied by user
-  uint32_t m_maxPackets;                  //!< Max # of packets accepted by the queue
-  uint32_t m_maxBytes;                    //!< Max # of bytes accepted by the queue
   uint32_t m_minBytes;                    //!< Minimum bytes in queue to allow a packet drop
-  QueueDiscMode m_mode;                   //!< The operating mode (Bytes or packets)
+
 
   // Codel parameters
   // Maintained by Cobalt

@@ -73,7 +73,6 @@ std::stringstream filePlotQueueDiscAvg;
 void
 CheckQueueDiscSize (Ptr<QueueDisc> queue)
 {
-  //uint32_t qSize = StaticCast<CobaltQueueDisc> (queue)->GetQueueSize ();
   uint32_t qSize = queue->GetCurrentSize ().GetValue ();
   avgQueueDiscSize += qSize;
   checkTimes++;
@@ -192,14 +191,8 @@ main (int argc, char *argv[])
 
   // Cobalt params
   NS_LOG_INFO ("Set Cobalt params");
-  //Config::SetDefault ("ns3::CobaltQueueDisc::MaxSize",
-                        //QueueSizeValue (QueueSize (QueueSizeUnit::PACKETS, queueDiscLimitPackets)));
    Config::SetDefault ("ns3::CobaltQueueDisc::MaxSize",
                       QueueSizeValue (QueueSize (QueueSizeUnit::PACKETS, queueSize)));
-
-  //Config::SetDefault ("ns3::CobaltQueueDisc::Mode", StringValue ("QUEUE_DISC_MODE_PACKETS"));
-  // Using the default values set by the Queue Disc
-
   NS_LOG_INFO ("Install internet stack on all nodes.");
   InternetStackHelper internet;
   internet.Install (c);
@@ -207,7 +200,7 @@ main (int argc, char *argv[])
   TrafficControlHelper tchPfifo;
   uint16_t handle = tchPfifo.SetRootQueueDisc ("ns3::PfifoFastQueueDisc");
   tchPfifo.AddInternalQueues (handle, 3, "ns3::DropTailQueue", "MaxSize", StringValue ("1500p"));
-  //tchPfifo.AddInternalQueues (handle, 3, "ns3::DropTailQueue", "MaxPackets", UintegerValue (1500));
+  
 
   TrafficControlHelper tchCobalt;
   tchCobalt.SetRootQueueDisc ("ns3::CobaltQueueDisc");
@@ -300,18 +293,16 @@ main (int argc, char *argv[])
       remove (filePlotQueueDisc.str ().c_str ());
       remove (filePlotQueueDiscAvg.str ().c_str ());
       Ptr<QueueDisc> queue = queueDiscs.Get (0);
-      //Simulator::ScheduleNow (&avgQueueDiscSize, queue);
       Simulator::ScheduleNow (&CheckQueueDiscSize, queue);
     }
 
   Simulator::Stop (Seconds (sink_stop_time));
   Simulator::Run ();
   QueueDisc::Stats st = queueDiscs.Get (0)->GetStats ();
-  //CobaltQueueDisc::Stats st = StaticCast<CobaltQueueDisc> (queueDiscs.Get (0))->GetStats ();
+  
 
   // We don't want the queue to become full as it introduces significant queue delay
   // Hence qLimDrop should ideally be 0 if Cobalt is functioning well
-  //if (st.qLimDrop != 0)
  if (st.GetNDroppedPackets (CobaltQueueDisc::OVERLIMIT_DROP) != 0)
     {
       std::cout << "There should be no drops due to queue full." << std::endl;
@@ -329,18 +320,10 @@ main (int argc, char *argv[])
   if (printCobaltStats)
     {
       std::cout << "*** Cobalt stats from Node 2 queue ***" << std::endl;
-      //std::cout << "\t " << st.GetNDroppedPackets(CobaltQueueDisc::OVERLIMIT_DROP) << " drops by Blue when drop probability < 1" << std::endl;
       std::cout << "\t " << st.GetNDroppedPackets(CobaltQueueDisc::TARGET_EXCEEDED_DROP) << " drops due to " << std::endl;
-      //std::cout << "\t " << st.unforcedDrop << " drops by Blue when drop probability < 1" << std::endl;
-      //std::cout << "\t " << st.GetNDroppedPackets(CobaltQueueDisc::TARGET_EXCEEDED_DROP) << " drops by Codel or Blue when drop probability = 1" << std::endl;
       std::cout << "\t " << st.GetNDroppedPackets(CobaltQueueDisc::forcedDrop) << " drops by Codel or Blue when drop probability = 1" << std::endl;
       std::cout << "\t " << st.GetNDroppedPackets(CobaltQueueDisc::OVERLIMIT_DROP) << " drops due to queue limits" << std::endl;
       std::cout << "\t " << st.GetNDroppedPackets(CobaltQueueDisc::forcedMark) << " ECN forced Mark by Codel " << std::endl;
-
-      //std::cout << "\t " << st.forcedDrop << " drops by Codel or Blue when drop probability = 1" << std::endl;
-      //std::cout << "\t " << st.qLimDrop << " drops due to queue limits" << std::endl;
-      //std::cout << "\t " << st.forcedMark << " ECN forced Mark by Codel " << std::endl;
-
     }
 
   Simulator::Destroy ();

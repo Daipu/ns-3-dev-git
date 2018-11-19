@@ -113,7 +113,6 @@ public:
    *
    * \param mode the mode
    */
-  //CobaltQueueDiscBasicEnqueueDequeue (std::string mode);
   CobaltQueueDiscBasicEnqueueDequeue (QueueSizeUnit mode);
   virtual void DoRun (void);
 
@@ -434,7 +433,6 @@ CobaltQueueDiscECNtest::RunECNtest (QueueSizeUnit mode)
 
   queue->Initialize ();
    if (mode == QueueSizeUnit::BYTES)
-  //if(queue->GetMode () == CobaltQueueDisc::BYTES)
       Enqueue (queue, pktSize, 100, true);
   else
       Enqueue (queue, 1, 100, true);
